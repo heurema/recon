@@ -1,0 +1,111 @@
+# recon configuration
+# Place at ~/.config/recon/briefing.toml (global, loaded by default)
+# Or pass explicitly: recon run --config ./briefing.toml
+#
+# SECURITY: This file executes shell commands. Never use configs from untrusted sources.
+
+schema_version = 1
+
+[defaults]
+timeout_sec = 10          # per-source timeout
+max_output_bytes = 1048576  # 1MB per source
+parallel = true           # run sources concurrently
+
+# --- Sources ---
+# Each source is a shell command or file reader.
+#
+# Fields:
+#   id            — unique identifier (required)
+#   section       — grouping: health | actions | code | comms | context | ideas (required)
+#   type          — "shell" (default) | "file"
+#   args          — command + arguments array, no shell expansion (for type = "shell")
+#   path          — file path, ~ expanded (for type = "file")
+#   format        — expected output: json | jsonl | text | markdown (required)
+#   timeout_sec   — override default timeout
+#   on_error      — "warn" (default) | "fail" | "omit"
+#   enabled       — true (default) | false
+#
+# NOTE: ~ is expanded in `path` fields only, NOT in `args`.
+# Use absolute paths or $HOME in args.
+
+# -- Health --
+
+[[source]]
+id = "collector-health"
+section = "health"
+type = "file"
+path = "~/vicc/state/collectors/collector_health.json"
+format = "json"
+
+# -- Actions (tasks, issues, decisions) --
+
+[[source]]
+id = "taskwarrior"
+section = "actions"
+args = ["task", "export", "+PENDING", "+READY"]
+format = "json"
+
+[[source]]
+id = "beads-issues"
+section = "actions"
+args = ["beads", "ls", "--format", "json"]
+format = "json"
+on_error = "omit"  # skip silently if beads not available
+
+[[source]]
+id = "decisions-pending"
+section = "actions"
+type = "file"
+path = "~/vicc/state/cycle/directive.md"
+format = "markdown"
+
+# -- Code (PRs, issues, traffic) --
+
+[[source]]
+id = "github-prs"
+section = "code"
+args = ["gh", "pr", "list", "--json", "title,url,author,updatedAt,reviewDecision"]
+format = "json"
+
+[[source]]
+id = "github-notifications"
+section = "code"
+args = ["gh", "api", "notifications"]
+format = "json"
+timeout_sec = 15
+
+# -- Communications --
+
+[[source]]
+id = "gmail"
+section = "comms"
+type = "file"
+path = "~/vicc/state/gmail/summary.json"
+format = "json"
+
+# -- Context (metrics, sessions, agent state) --
+
+[[source]]
+id = "agent-brief"
+section = "context"
+type = "file"
+path = "~/vicc/state/agent-brief.md"
+format = "markdown"
+
+[[source]]
+id = "engram-recent"
+section = "context"
+args = ["engram", "timeline", "--hours", "24", "--format", "json"]
+format = "json"
+on_error = "omit"
+enabled = false  # enable if engram CLI is available
+
+# -- Ideas & News --
+
+# NOTE: glob type available in v0.2+
+# [[source]]
+# id = "herald-digest"
+# section = "ideas"
+# type = "glob"
+# path = "~/.herald/briefs/*.md"
+# format = "markdown"
