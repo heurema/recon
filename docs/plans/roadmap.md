@@ -149,18 +149,57 @@ Key contracts:
 
 ---
 
-## v0.2.0 — Freshness & Extensions
+## v0.2.0 — Cache + Diff + Priority
 
-- [ ] `freshness_sec` + `freshness_field` per source → `"fresh"` | `"stale"` | `"unknown"` markers
-- [ ] `freshness_field` works for both `file` and `shell` sources (if stdout is JSON with timestamp)
-- [ ] `glob` source type: pick most recently modified file matching pattern
-- [ ] `glob_mode = "latest"` (default) | `"all"` | `"concat"`
+**Theme:** make recon fast (<1s cached), stateful (diff), and smart (priority scoring).
+**Source:** brainstorm 2026-03-25 (3 personas, 17 cards, 6 branches → 3 best bets).
+
+### SQLite history + cache (`~/.local/share/recon/history.db`)
+- [ ] `rusqlite` dependency, single DB file, schema_version table
+- [ ] Store each run: timestamp, duration_ms, per-source results (JSON blob), summary counts
+- [ ] Per-source TTL cache: if last run for source < TTL, return cached data
+- [ ] Default TTLs: shell sources 2min, file sources 0 (always fresh), configurable via `cache_ttl_sec` per source
+- [ ] `recon run` — cache hit <1s, cache miss = live fetch, mixed = partial refresh
+- [ ] `recon run --force` — ignore cache, fetch everything fresh
+- [ ] `cached_at` field added to each SourceResult when serving from cache
+
+### Diff mode
+- [ ] `recon run --diff` — compare current run with previous, output only changes
+- [ ] Delta per source: `added`, `removed`, `changed` item counts
+- [ ] Items unchanged across N consecutive runs → `stalled: true` flag
+- [ ] New items since last run → `new: true` flag
+- [ ] Diff output includes both `delta` summary and full `sections` (agent can use either)
+
+### Priority scoring
+- [ ] `priority` field (0-100) on each item in SourceResult.data (when data is array)
+- [ ] Deterministic rules (no ML):
+  - Task with due date today → 100
+  - Task with due date within 3 days → 80
+  - PR open >3 days → +30
+  - Checkpoint within 7 days → +50
+  - Item stalled (unchanged >5 runs) → `stalled: true` + priority +20
+  - Unread email with "alert" or "security" in subject → +40
+- [ ] Rules configurable via `[scoring]` section in briefing.toml
+- [ ] `recon run --no-score` to skip scoring (raw data only)
+
+### Pretty output
+- [ ] `--format pretty` — ANSI colored terminal output, no external deps
+- [ ] Compact layout: section headers, top items by priority, status indicators
+- [ ] Stalled items dimmed, high-priority items bold/red
+- [ ] Timing per source shown inline
+
+### Config extensions
+- [ ] `cache_ttl_sec` per source (0 = no cache, default from `[defaults]`)
 - [ ] `cwd` per source — working directory for shell commands
-- [ ] `env` per source — extra env vars for child process (`env = { GH_TOKEN = "$GH_TOKEN" }`)
-- [ ] `transform` field — jq expression for post-processing JSON output
-- [ ] `display_if_empty = false` — omit source from output if data is empty array/null
-- [ ] `recon run --diff` — content hash per source, show only changes since last run
-- [ ] Cache: `~/.cache/recon/last.json` for diff baseline
+- [ ] `env` per source — extra env vars for child process
+- [ ] `display_if_empty = false` — omit source from output if data is empty
+- [ ] `glob` source type: pick most recently modified file matching pattern
+
+### Analytics subcommand
+- [ ] `recon trend` — sparkline ASCII table from history.db (7d default)
+- [ ] Metrics: task count, PR count, unread email, source latency, error rate
+- [ ] `recon trend --days 30` for longer window
+- [ ] Anomaly flag: source p95 latency >2× median → warning
 
 ---
 
@@ -206,6 +245,10 @@ Key contracts:
 - [ ] `recon doctor` — comprehensive environment audit (PATH, auth, permissions, cache)
 - [ ] Typed connectors (trait-based) for sources that benefit from structured parsing
 - [ ] Team mode: shared config + aggregated team briefing
+- [ ] **Pressure clusters** — cross-source entity matching (PR + task + directive linked by project)
+- [ ] **Drift compass** — cosine distance between consecutive run vectors, anomaly detection
+- [ ] **Rhythm fingerprint** — chronobiology: peak/trough/recovery phases from commit patterns
+- [ ] **Coherence score** — per-project alignment between commits, PRs, calendar, tasks
 
 ---
 
@@ -218,18 +261,23 @@ Key contracts:
 | Output primary | JSON to stdout | Agent-first, pipe-friendly |
 | Diagnostics | stderr only | `--verbose` must not break JSON output |
 | Trust model | Global config default, local via `--config` | Prevent arbitrary code exec from untrusted repos |
-| Storage | Stateless (stdout), optional cache for diff | Simplicity; no daemon, no DB |
+| Storage | SQLite history.db (v0.2+), stateless stdout | Cache + diff + trend without daemon |
+| Identity | Agent-first, human-secondary | JSON primary, --format pretty for humans |
+| Scoring | Deterministic rules, no ML | Configurable weights.toml, predictable |
 | Distribution | Single binary, crates.io | Minimal install friction |
 | Config format | TOML | Rust ecosystem standard, human-editable |
 | Async runtime | tokio | Parallel source execution with timeouts |
 | Process cleanup | Kill process group (setsid+killpg) | Prevent orphan child processes on timeout |
 | `~` expansion | In path/glob fields only, NOT in args | Explicit, predictable, no hidden magic |
-| Confidence score | Deferred to v0.2+ | Raw counts + partial flag more honest for v0.1 |
+| Confidence score | Replaced by priority scoring in v0.2 | Deterministic rules > opaque float |
 
 ---
 
 ## Changelog
 
+- 2026-03-25 (v4): Brainstorm (3 personas, 17 cards). v0.2 rewritten: SQLite cache+history,
+  diff mode, priority scoring, pretty output, trend analytics. Identity resolved: agent-first.
+  Wild cards added to Future: pressure clusters, drift compass, rhythm fingerprint.
 - 2026-03-25 (v3): Panel review 2 (readiness check). 7 blocking questions resolved:
   data=any JSON value, on_error semantics frozen, trust field added, check --format json
   deferred, parallel field removed, disabled/filtered summary rules defined. SKILL.md synced.
