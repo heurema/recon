@@ -61,6 +61,14 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
         }
         Err(e) => {
             let elapsed = started.elapsed().as_millis() as u64;
+            // #18: distinguish EISDIR/EACCES from ENOENT
+            let error_type = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                "parse_error"
+            } else if e.raw_os_error() == Some(21) { // EISDIR
+                "parse_error"
+            } else {
+                "file_not_found"
+            };
             return SourceResult {
                 id: source.id.clone(),
                 source_type: "file".to_string(),
@@ -70,7 +78,7 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
                 duration_ms: elapsed,
                 data: Value::Null,
                 error: Some(SourceError {
-                    error_type: "file_not_found".to_string(),
+                    error_type: error_type.to_string(),
                     message: format!("cannot read {}: {}", path, e),
                     exit_code: None,
                     stderr: String::new(),

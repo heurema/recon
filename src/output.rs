@@ -1,12 +1,11 @@
 use crate::model::{Briefing, Section, SourceResult};
 
-/// Serialize briefing to JSON (pretty-printed). Diagnostics must not appear on stdout.
+/// Serialize briefing to JSON (pretty-printed).
 pub fn render_json(briefing: &Briefing) -> String {
     serde_json::to_string_pretty(briefing).expect("Briefing is always serializable")
 }
 
-/// Render briefing as human-readable markdown.
-/// Each source's data is wrapped in <external_data source="id" trust="untrusted"> tags.
+/// Render briefing as human-readable markdown with content fencing.
 pub fn render_text(briefing: &Briefing) -> String {
     let mut out = String::new();
 
@@ -35,12 +34,18 @@ pub fn render_text(briefing: &Briefing) -> String {
 fn render_section(section: &Section) -> String {
     let mut out = String::new();
     out.push_str(&format!("## {}\n\n", section.title));
-
     for source in &section.sources {
         out.push_str(&render_source(source));
     }
-
     out
+}
+
+/// #4: XML-escape source id and data to prevent injection
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn render_source(source: &SourceResult) -> String {
@@ -48,13 +53,13 @@ fn render_source(source: &SourceResult) -> String {
 
     out.push_str(&format!(
         "### {} — status: {}  duration: {}ms\n\n",
-        source.id, source.status, source.duration_ms
+        xml_escape(&source.id), source.status, source.duration_ms
     ));
 
     if let Some(err) = &source.error {
         out.push_str(&format!(
             "> **Error** ({}): {}\n\n",
-            err.error_type, err.message
+            xml_escape(&err.error_type), xml_escape(&err.message)
         ));
     }
 
@@ -64,16 +69,19 @@ fn render_source(source: &SourceResult) -> String {
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     };
 
+    // #4: escape data content AND source id in XML tags
+    let escaped_id = xml_escape(&source.id);
+    let escaped_data = xml_escape(&data_str);
+
     if !data_str.is_empty() {
         out.push_str(&format!(
             "<external_data source=\"{}\" trust=\"untrusted\">\n{}\n</external_data>\n\n",
-            source.id, data_str
+            escaped_id, escaped_data
         ));
     } else {
-        // Still emit the tag so AC03 tests can find it
         out.push_str(&format!(
             "<external_data source=\"{}\" trust=\"untrusted\">\n</external_data>\n\n",
-            source.id
+            escaped_id
         ));
     }
 

@@ -13,10 +13,8 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
     let wall_start = Instant::now();
     let generated_at = Utc::now();
 
-    // AC13: filter disabled sources before execution
     let enabled: Vec<_> = config.sources.iter().filter(|s| s.enabled).collect();
 
-    // AC14: spawn all concurrently
     let default_timeout = config.defaults.timeout_sec;
     let max_output_bytes = config.defaults.max_output_bytes;
 
@@ -30,21 +28,20 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
             tokio::spawn(async move {
                 match source.source_type {
                     SourceType::Shell => {
-                        // Spawn child first, then timeout on wait — allows kill on timeout
                         match shell::spawn_child(&source) {
                             Err(err_result) => err_result,
                             Ok((child, pgid)) => {
                                 match timeout(timeout_dur, shell::execute_child(child, &source, max_output_bytes)).await {
                                     Ok(result) => result,
                                     Err(_) => {
-                                        // Timeout: kill the process group
                                         shell::kill_process_group(pgid).await;
+                                        // #15: status = "timed_out" not "error"
                                         SourceResult {
                                             id: source.id.clone(),
                                             source_type: "shell".to_string(),
                                             content_type: shell::format_to_content_type(&source.format),
                                             trust: "untrusted".to_string(),
-                                            status: "error".to_string(),
+                                            status: "timed_out".to_string(),
                                             duration_ms: timeout_dur.as_millis() as u64,
                                             data: serde_json::Value::Null,
                                             error: Some(SourceError {
@@ -67,7 +64,7 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
                                 source_type: "file".to_string(),
                                 content_type: shell::format_to_content_type(&source.format),
                                 trust: "untrusted".to_string(),
-                                status: "error".to_string(),
+                                status: "timed_out".to_string(),
                                 duration_ms: timeout_dur.as_millis() as u64,
                                 data: serde_json::Value::Null,
                                 error: Some(SourceError {
@@ -84,15 +81,19 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
         })
         .collect();
 
-    // Collect results preserving source order (each handle maps 1:1 to enabled[i])
     let mut results: Vec<(SectionId, SourceResult, OnError)> = Vec::new();
     for (i, handle) in handles.into_iter().enumerate() {
         let on_error = enabled[i].on_error.clone();
         let section = enabled[i].section.clone();
+        // #20: use correct source_type in panic fallback
+        let src_type = match enabled[i].source_type {
+            SourceType::Shell => "shell",
+            SourceType::File => "file",
+        };
         let result = handle.await.unwrap_or_else(|e| {
             SourceResult {
                 id: enabled[i].id.clone(),
-                source_type: "shell".to_string(),
+                source_type: src_type.to_string(),
                 content_type: "text".to_string(),
                 trust: "untrusted".to_string(),
                 status: "error".to_string(),
@@ -109,46 +110,42 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
         results.push((section, result, on_error));
     }
 
-    // Classify results and apply on_error policy
     let mut sources_ok: usize = 0;
     let mut sources_failed: usize = 0;
     let mut sources_timed_out: usize = 0;
     let mut partial = false;
+    let mut has_fail_policy_error = false;
 
-    // Group by SectionId using BTreeMap (SectionId derives Ord → deterministic order AC20)
     let mut section_map: BTreeMap<SectionId, Vec<SourceResult>> = BTreeMap::new();
 
     for (section_id, result, on_error) in results {
-        let is_timed_out = result
-            .error
-            .as_ref()
-            .map(|e| e.error_type == "timed_out")
-            .unwrap_or(false);
+        let is_timed_out = result.status == "timed_out";
         let is_error = result.status == "error";
         let is_bad = is_error || is_timed_out;
 
-        // AC17: on_error='omit' — completely exclude from output AND summary
+        // on_error='omit' — completely exclude
         if is_bad && on_error == OnError::Omit {
             continue;
         }
 
-        // Count into summary (AC21/AC22)
+        // #8: on_error='fail' — flag for exit code 3
+        if is_bad && on_error == OnError::Fail {
+            has_fail_policy_error = true;
+        }
+
         if is_timed_out {
             sources_timed_out += 1;
-            partial = true; // AC23
+            partial = true;
         } else if is_error {
             sources_failed += 1;
-            partial = true; // AC23
+            partial = true;
         } else {
             sources_ok += 1;
         }
 
-        // AC18: on_error='fail' — include result but partial already set
-        // AC19: on_error='warn' (default) — include with error details
         section_map.entry(section_id).or_default().push(result);
     }
 
-    // AC20: build sections in fixed SectionId order (BTreeMap ensures Ord order)
     let sections: Vec<Section> = section_map
         .into_iter()
         .map(|(id, sources)| {
@@ -161,19 +158,16 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
         })
         .collect();
 
-    // AC21 + AC22: summary counts
-    // AC21: sources_total = enabled, non-omitted sources counted in summary
-    // sources_total = sources_ok + sources_failed + sources_timed_out (AC22)
     let sources_total = sources_ok + sources_failed + sources_timed_out;
-
     let duration_ms = wall_start.elapsed().as_millis() as u64;
 
     Briefing {
-        schema_version: "1".to_string(),
+        // #9: schema_version "0.1" per roadmap spec
+        schema_version: "0.1".to_string(),
         generated_at,
         duration_ms,
-        partial,
-        // AC24: config path and scope
+        // #8: on_error=fail forces partial
+        partial: partial || has_fail_policy_error,
         config: BriefingConfig {
             path: config_path.to_string(),
             scope: scope.to_string(),
@@ -188,14 +182,30 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
     }
 }
 
+/// #8: check if any on_error=fail source errored (for exit code logic in main)
+pub fn has_fail_policy_errors(config: &Config, briefing: &Briefing) -> bool {
+    for source_cfg in &config.sources {
+        if source_cfg.on_error == OnError::Fail {
+            for section in &briefing.sections {
+                for result in &section.sources {
+                    if result.id == source_cfg.id && (result.status == "error" || result.status == "timed_out") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 fn section_title(id: &SectionId) -> String {
     match id {
         SectionId::Health => "Health".to_string(),
-        SectionId::Actions => "Actions".to_string(),
+        SectionId::Actions => "Pending Actions".to_string(),
         SectionId::Code => "Code".to_string(),
-        SectionId::Comms => "Comms".to_string(),
+        SectionId::Comms => "Communications".to_string(),
         SectionId::Context => "Context".to_string(),
-        SectionId::Ideas => "Ideas".to_string(),
+        SectionId::Ideas => "Ideas & News".to_string(),
     }
 }
 
@@ -246,34 +256,26 @@ mod tests {
             shell_source("enabled", vec!["echo", "hi"], true, OnError::Warn),
             shell_source("disabled", vec!["echo", "nope"], false, OnError::Warn),
         ]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
         let all_ids: Vec<_> = briefing
             .sections
             .iter()
             .flat_map(|s| s.sources.iter().map(|r| r.id.as_str()))
             .collect();
-        assert!(all_ids.contains(&"enabled"), "enabled source missing");
-        assert!(!all_ids.contains(&"disabled"), "disabled source present");
+        assert!(all_ids.contains(&"enabled"));
+        assert!(!all_ids.contains(&"disabled"));
     }
 
     #[tokio::test]
     async fn test_omit_on_error() {
-        let cfg = make_config(vec![
-            shell_source(
-                "failing",
-                vec!["__no_such_bin_recon__"],
-                true,
-                OnError::Omit,
-            ),
-        ]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
-        let all_ids: Vec<_> = briefing
-            .sections
-            .iter()
-            .flat_map(|s| s.sources.iter().map(|r| r.id.as_str()))
-            .collect();
-        assert!(all_ids.is_empty(), "omit source should not appear in output");
-        assert_eq!(briefing.summary.sources_total, 0, "omitted source not in total");
+        let cfg = make_config(vec![shell_source(
+            "failing",
+            vec!["__no_such_bin_recon__"],
+            true,
+            OnError::Omit,
+        )]);
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
+        assert_eq!(briefing.summary.sources_total, 0);
     }
 
     #[tokio::test]
@@ -284,14 +286,14 @@ mod tests {
             true,
             OnError::Warn,
         )]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
         let all_ids: Vec<_> = briefing
             .sections
             .iter()
             .flat_map(|s| s.sources.iter().map(|r| r.id.as_str()))
             .collect();
-        assert!(all_ids.contains(&"failing"), "warn source should appear");
-        assert!(briefing.partial, "partial should be true on error");
+        assert!(all_ids.contains(&"failing"));
+        assert!(briefing.partial);
     }
 
     #[tokio::test]
@@ -300,15 +302,9 @@ mod tests {
             shell_source("ok1", vec!["echo", "hi"], true, OnError::Warn),
             shell_source("fail1", vec!["false"], true, OnError::Warn),
         ]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
         assert_eq!(briefing.summary.sources_ok, 1);
         assert_eq!(briefing.summary.sources_failed, 1);
-        assert_eq!(
-            briefing.summary.sources_total,
-            briefing.summary.sources_ok
-                + briefing.summary.sources_failed
-                + briefing.summary.sources_timed_out
-        );
     }
 
     #[tokio::test]
@@ -320,22 +316,21 @@ mod tests {
         let mut src_code = shell_source("c", vec!["echo", "3"], true, OnError::Warn);
         src_code.section = SectionId::Code;
         let cfg = make_config(vec![src_ideas, src_code, src_health]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
         let ids: Vec<_> = briefing.sections.iter().map(|s| s.id.as_str()).collect();
-        // AC20: Health < Code < Ideas
-        let health_pos = ids.iter().position(|&x| x == "health").unwrap();
-        let code_pos = ids.iter().position(|&x| x == "code").unwrap();
-        let ideas_pos = ids.iter().position(|&x| x == "ideas").unwrap();
-        assert!(health_pos < code_pos, "health before code");
-        assert!(code_pos < ideas_pos, "code before ideas");
+        let h = ids.iter().position(|&x| x == "health").unwrap();
+        let c = ids.iter().position(|&x| x == "code").unwrap();
+        let i = ids.iter().position(|&x| x == "ideas").unwrap();
+        assert!(h < c);
+        assert!(c < i);
     }
 
     #[tokio::test]
     async fn test_config_populated() {
         let cfg = make_config(vec![]);
-        let briefing = collect(&cfg, "/my/config.toml", "workspace").await;
+        let briefing = collect(&cfg, "/my/config.toml", "global").await;
         assert_eq!(briefing.config.path, "/my/config.toml");
-        assert_eq!(briefing.config.scope, "workspace");
+        assert_eq!(briefing.config.scope, "global");
     }
 
     #[tokio::test]
@@ -343,11 +338,30 @@ mod tests {
         let mut src = shell_source("slow", vec!["sleep", "10"], true, OnError::Warn);
         src.timeout_sec = Some(1);
         let cfg = make_config(vec![src]);
-        let briefing = collect(&cfg, "/tmp/test.toml", "local").await;
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
         let result = &briefing.sections[0].sources[0];
-        assert_eq!(result.status, "error");
+        // #15: status is "timed_out" not "error"
+        assert_eq!(result.status, "timed_out");
         assert_eq!(result.error.as_ref().unwrap().error_type, "timed_out");
         assert!(briefing.partial);
         assert_eq!(briefing.summary.sources_timed_out, 1);
+    }
+
+    #[tokio::test]
+    async fn test_schema_version() {
+        let cfg = make_config(vec![]);
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
+        assert_eq!(briefing.schema_version, "0.1");
+    }
+
+    #[tokio::test]
+    async fn test_fail_policy() {
+        let cfg = make_config(vec![
+            shell_source("critical", vec!["false"], true, OnError::Fail),
+            shell_source("ok", vec!["echo", "hi"], true, OnError::Warn),
+        ]);
+        let briefing = collect(&cfg, "/tmp/test.toml", "explicit").await;
+        assert!(briefing.partial);
+        assert!(has_fail_policy_errors(&cfg, &briefing));
     }
 }

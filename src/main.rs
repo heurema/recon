@@ -9,18 +9,25 @@ use recon::{check, init, output, runner};
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
-    let exit_code = run(cli).await;
+    // #5: handle SIGINT gracefully
+    let exit_code = tokio::select! {
+        code = run_app() => code,
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("\ninterrupted");
+            130
+        }
+    };
     process::exit(exit_code);
 }
 
-async fn run(cli: Cli) -> i32 {
+async fn run_app() -> i32 {
+    let cli = Cli::parse();
     match cli.command {
         Commands::Run { format, section, source } => {
             cmd_run(cli.config.as_deref(), cli.verbose, &format, section.as_deref(), source.as_deref()).await
         }
-        Commands::Check => {
-            cmd_check(cli.config.as_deref(), cli.verbose)
+        Commands::Check { source } => {
+            cmd_check(cli.config.as_deref(), cli.verbose, source.as_deref())
         }
         Commands::Init { print } => {
             cmd_init(print)
@@ -35,8 +42,30 @@ async fn cmd_run(
     section_filter: Option<&str>,
     source_filter: Option<&str>,
 ) -> i32 {
-    // Load config — exit 2 on config errors
-    let _config_path_str = config_path.unwrap_or("");
+    // #14: validate format
+    if format != "json" && format != "text" {
+        eprintln!("error: invalid format '{}'. Valid: json, text", format);
+        return 2;
+    }
+
+    // #13: validate section filter
+    let valid_sections = ["health", "actions", "code", "comms", "context", "ideas"];
+    if let Some(sec) = section_filter {
+        if !valid_sections.contains(&sec) {
+            eprintln!("error: unknown section '{}'. Valid: {}", sec, valid_sections.join(", "));
+            return 2;
+        }
+    }
+
+    // #10: resolve config scope
+    let (scope, resolved_display) = if config_path.is_some() {
+        ("explicit", config_path.unwrap().to_string())
+    } else if std::env::var("RECON_CONFIG").map(|v| !v.is_empty()).unwrap_or(false) {
+        ("env", std::env::var("RECON_CONFIG").unwrap())
+    } else {
+        ("global", "~/.config/recon/briefing.toml".to_string())
+    };
+
     let config = match Config::load(config_path.map(Path::new)) {
         Ok(c) => c,
         Err(e) => {
@@ -46,68 +75,58 @@ async fn cmd_run(
     };
 
     if verbose {
-        eprintln!("[verbose] config loaded: {} sources", config.sources.len());
-        if let Some(s) = section_filter {
-            eprintln!("[verbose] section filter: {}", s);
-        }
-        if let Some(s) = source_filter {
-            eprintln!("[verbose] source filter: {}", s);
-        }
+        eprintln!("[recon] config: {} (scope: {})", resolved_display, scope);
+        eprintln!("[recon] {} sources loaded", config.sources.len());
     }
 
-    // Apply source/section filters before collection
     let filtered_config = apply_filters(config, section_filter, source_filter);
 
-    // Exit 3 if no enabled sources remain after filtering
     let enabled_count = filtered_config.sources.iter().filter(|s| s.enabled).count();
-    if enabled_count == 0 && (section_filter.is_some() || source_filter.is_some()) {
-        eprintln!("error: no sources match the given filter");
+    if enabled_count == 0 {
+        if section_filter.is_some() || source_filter.is_some() {
+            eprintln!("error: no sources match the given filter");
+        } else {
+            eprintln!("error: no enabled sources in config");
+        }
         return 3;
     }
 
-    let scope = "local";
-    let resolved_path = config_path.unwrap_or("~/.config/recon/briefing.toml");
-
     if verbose {
-        eprintln!("[verbose] collecting {} enabled sources", enabled_count);
+        eprintln!("[recon] collecting {} sources...", enabled_count);
     }
 
-    let briefing = runner::collect(&filtered_config, resolved_path, scope).await;
+    let briefing = runner::collect(&filtered_config, &resolved_display, scope).await;
 
     if verbose {
         eprintln!(
-            "[verbose] done: ok={} failed={} timed_out={}",
+            "[recon] done: ok={} failed={} timed_out={} ({}ms)",
             briefing.summary.sources_ok,
             briefing.summary.sources_failed,
             briefing.summary.sources_timed_out,
+            briefing.duration_ms,
         );
     }
 
-    // Render output to stdout
     match format {
-        "text" => {
-            print!("{}", output::render_text(&briefing));
-        }
-        _ => {
-            // Default: json
-            println!("{}", output::render_json(&briefing));
-        }
+        "text" => print!("{}", output::render_text(&briefing)),
+        _ => println!("{}", output::render_json(&briefing)),
     }
 
-    // Determine exit code
-    let all_enabled = filtered_config.sources.iter().filter(|s| s.enabled).count();
-    if briefing.summary.sources_failed > 0 || briefing.summary.sources_timed_out > 0 {
-        if briefing.summary.sources_ok == 0 && all_enabled > 0 {
-            3 // fatal — no sources succeeded
-        } else {
-            1 // partial — some failed
-        }
+    // #8: on_error=fail → exit 3
+    if runner::has_fail_policy_errors(&filtered_config, &briefing) {
+        return 3;
+    }
+
+    if briefing.summary.sources_ok == 0 && enabled_count > 0 {
+        3 // fatal — no sources succeeded
+    } else if briefing.partial {
+        1 // partial — some failed
     } else {
-        0 // all ok
+        0
     }
 }
 
-fn cmd_check(config_path: Option<&str>, verbose: bool) -> i32 {
+fn cmd_check(config_path: Option<&str>, verbose: bool, source_filter: Option<&str>) -> i32 {
     let config = match Config::load(config_path.map(Path::new)) {
         Ok(c) => c,
         Err(e) => {
@@ -116,9 +135,10 @@ fn cmd_check(config_path: Option<&str>, verbose: bool) -> i32 {
         }
     };
 
-    let report = check::report(&config, verbose);
+    let (report, has_issues) = check::report(&config, verbose, source_filter);
     print!("{}", report);
-    0
+    // #6: exit 1 when sources have issues
+    if has_issues { 1 } else { 0 }
 }
 
 fn cmd_init(print_flag: bool) -> i32 {
@@ -131,7 +151,6 @@ fn cmd_init(print_flag: bool) -> i32 {
     0
 }
 
-/// Filter config sources by section and/or source id.
 fn apply_filters(
     mut config: recon::Config,
     section_filter: Option<&str>,
@@ -146,10 +165,8 @@ fn apply_filters(
             sec_str == sec
         });
     }
-
     if let Some(src_id) = source_filter {
         config.sources.retain(|s| s.id == src_id);
     }
-
     config
 }

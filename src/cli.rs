@@ -33,7 +33,11 @@ pub enum Commands {
     },
 
     /// Validate config and test source availability
-    Check,
+    Check {
+        /// Check a single source by id
+        #[arg(long)]
+        source: Option<String>,
+    },
 
     /// Print a commented TOML config template to stdout
     Init {

@@ -52,22 +52,33 @@ pub struct SourceError {
     pub error_type: String,
     pub message: String,
     pub exit_code: Option<i32>,
-    /// Truncated to 1KB. Sensitive patterns (tokens, keys) are redacted.
+    /// Truncated to 1KB at char boundary. Sensitive patterns redacted.
     pub stderr: String,
 }
 
 impl SourceError {
-    /// Truncate stderr to 1KB and redact potential secrets.
+    /// Truncate stderr to 1KB (char-safe) and redact potential secrets.
     pub fn sanitized_stderr(raw: &str) -> String {
+        // #1: char-safe truncation (no panic on multi-byte UTF-8)
         let truncated = if raw.len() > 1024 {
-            format!("{}... [truncated]", &raw[..1024])
+            let end = raw
+                .char_indices()
+                .take_while(|(i, _)| *i < 1024)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            format!("{}... [truncated]", &raw[..end])
         } else {
             raw.to_string()
         };
-        let patterns = ["token=", "key=", "password=", "secret=", "authorization:"];
+        // #11: expanded redaction patterns including bearer tokens
+        let patterns = [
+            "token=", "key=", "password=", "secret=",
+            "authorization:", "bearer ", "api_key=",
+            "_token=", "_secret=",
+        ];
         let mut result = truncated;
         for pat in &patterns {
-            // Redact ALL occurrences (case-insensitive)
             loop {
                 let lower = result.to_lowercase();
                 let Some(pos) = lower.find(pat) else { break };

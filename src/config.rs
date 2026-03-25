@@ -153,6 +153,13 @@ impl Config {
             ));
         }
 
+        // #19: max_output_bytes must be > 0
+        if self.defaults.max_output_bytes == 0 {
+            return Err(AppError::ValidationError(
+                "defaults.max_output_bytes must be greater than 0".to_string(),
+            ));
+        }
+
         // Check for duplicate source IDs
         let mut seen_ids: HashSet<&str> = HashSet::new();
         for source in &self.sources {

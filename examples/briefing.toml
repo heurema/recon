@@ -7,7 +7,7 @@
 schema_version = 1
 
 [defaults]
-timeout_sec = 10          # per-source timeout
+timeout_sec = 10            # per-source timeout (seconds)
 max_output_bytes = 1048576  # 1MB per source
 parallel = true           # run sources concurrently
 
