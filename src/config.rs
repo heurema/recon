@@ -13,15 +13,15 @@ pub struct Defaults {
     pub max_output_bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum SectionId {
-    Health,
-    Actions,
-    Code,
-    Comms,
-    Context,
-    Ideas,
+    Health,   // 0 — first in output
+    Actions,  // 1
+    Code,     // 2
+    Comms,    // 3
+    Context,  // 4
+    Ideas,    // 5 — last in output
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +93,7 @@ fn default_true() -> bool {
 pub struct Config {
     pub schema_version: u32,
     pub defaults: Defaults,
+    #[serde(alias = "source")]
     pub sources: Vec<Source>,
 }
 

@@ -64,15 +64,18 @@ impl SourceError {
         } else {
             raw.to_string()
         };
-        // Redact common secret patterns
         let patterns = ["token=", "key=", "password=", "secret=", "authorization:"];
         let mut result = truncated;
         for pat in &patterns {
-            if let Some(pos) = result.to_lowercase().find(pat) {
-                let end = result[pos..].find(|c: char| c.is_whitespace() || c == '&' || c == '"' || c == '\'')
-                    .map(|i| pos + i)
+            // Redact ALL occurrences (case-insensitive)
+            loop {
+                let lower = result.to_lowercase();
+                let Some(pos) = lower.find(pat) else { break };
+                let end = result[pos + pat.len()..]
+                    .find(|c: char| c.is_whitespace() || c == '&' || c == '"' || c == '\'' || c == '\n')
+                    .map(|i| pos + pat.len() + i)
                     .unwrap_or(result.len());
-                result.replace_range(pos..end, &format!("{}[REDACTED]", pat));
+                result.replace_range(pos..end, "[REDACTED]");
             }
         }
         result
