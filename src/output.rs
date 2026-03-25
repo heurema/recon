@@ -69,14 +69,15 @@ fn render_source(source: &SourceResult) -> String {
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     };
 
-    // #4: escape data content AND source id in XML tags
+    // #4: escape source id in XML attribute, sanitize data for tag injection only
     let escaped_id = xml_escape(&source.id);
-    let escaped_data = xml_escape(&data_str);
+    // Only neutralize closing tag injection — keep data readable
+    let safe_data = data_str.replace("</external_data>", "&lt;/external_data&gt;");
 
     if !data_str.is_empty() {
         out.push_str(&format!(
             "<external_data source=\"{}\" trust=\"untrusted\">\n{}\n</external_data>\n\n",
-            escaped_id, escaped_data
+            escaped_id, safe_data
         ));
     } else {
         out.push_str(&format!(
