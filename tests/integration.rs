@@ -40,7 +40,7 @@ fn test_run_json_schema_version() {
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("stdout must be valid JSON");
 
-    assert_eq!(json["schema_version"], "1", "schema_version must be '1'");
+    assert_eq!(json["schema_version"], "0.1", "schema_version must be '0.1'");
     assert_eq!(json["sections"][0]["id"], "health");
 }
 
