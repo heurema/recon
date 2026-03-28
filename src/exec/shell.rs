@@ -15,21 +15,20 @@ pub fn spawn_child(source: &Source) -> Result<(tokio::process::Child, Option<i32
     let binary = &args[0];
 
     if which::which(binary).is_err() {
-        return Err(SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: 0,
-            data: Value::Null,
-            error: Some(SourceError {
+        return Err(SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "error",
+            0,
+            Value::Null,
+            Some(SourceError {
                 error_type: "command_not_found".to_string(),
                 message: format!("command not found: {}", binary),
                 exit_code: None,
                 stderr: String::new(),
             }),
-        });
+        ));
     }
 
     let mut cmd = Command::new(binary);
@@ -61,21 +60,20 @@ pub fn spawn_child(source: &Source) -> Result<(tokio::process::Child, Option<i32
             let pgid = child.id().map(|id| id as i32);
             Ok((child, pgid))
         }
-        Err(e) => Err(SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: 0,
-            data: Value::Null,
-            error: Some(SourceError {
+        Err(e) => Err(SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "error",
+            0,
+            Value::Null,
+            Some(SourceError {
                 error_type: "command_not_found".to_string(),
                 message: format!("failed to spawn {}: {}", binary, e),
                 exit_code: None,
                 stderr: String::new(),
             }),
-        }),
+        )),
     }
 }
 
@@ -144,15 +142,14 @@ pub async fn execute_child(
         }
         let _ = child.wait().await;
         let elapsed = started.elapsed().as_millis() as u64;
-        return SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: elapsed,
-            data: Value::Null,
-            error: Some(SourceError {
+        return SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "error",
+            elapsed,
+            Value::Null,
+            Some(SourceError {
                 error_type: "output_too_large".to_string(),
                 message: format!(
                     "stdout exceeded {} bytes, process killed",
@@ -163,28 +160,27 @@ pub async fn execute_child(
                     &String::from_utf8_lossy(&stderr_buf),
                 ),
             }),
-        };
+        );
     }
 
     let status = match child.wait().await {
         Ok(s) => s,
         Err(e) => {
             let elapsed = started.elapsed().as_millis() as u64;
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "shell".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "shell",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: "command_failed".to_string(),
                     message: format!("I/O error waiting for {}: {}", binary, e),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            };
+            );
         }
     };
 
@@ -194,15 +190,14 @@ pub async fn execute_child(
 
     if !status.success() {
         let exit_code = status.code();
-        return SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: elapsed,
-            data: Value::Null,
-            error: Some(SourceError {
+        return SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "error",
+            elapsed,
+            Value::Null,
+            Some(SourceError {
                 error_type: "command_failed".to_string(),
                 message: format!(
                     "command exited with code {}",
@@ -213,56 +208,53 @@ pub async fn execute_child(
                 exit_code,
                 stderr: sanitized,
             }),
-        };
+        );
     }
 
     let stdout_str = match std::str::from_utf8(&stdout_buf) {
         Ok(s) => s,
         Err(_) => {
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "shell".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "shell",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: "parse_error".to_string(),
                     message: "stdout is not valid UTF-8".to_string(),
                     exit_code: None,
                     stderr: sanitized,
                 }),
-            };
+            );
         }
     };
 
     match parse_output(stdout_str, &source.format) {
-        Ok(data) => SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "ok".to_string(),
-            duration_ms: elapsed,
+        Ok(data) => SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "ok",
+            elapsed,
             data,
-            error: None,
-        },
-        Err(msg) => SourceResult {
-            id: source.id.clone(),
-            source_type: "shell".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: elapsed,
-            data: Value::Null,
-            error: Some(SourceError {
+            None,
+        ),
+        Err(msg) => SourceResult::new(
+            source.id.clone(),
+            "shell",
+            format_to_content_type(&source.format),
+            "error",
+            elapsed,
+            Value::Null,
+            Some(SourceError {
                 error_type: "parse_error".to_string(),
                 message: msg,
                 exit_code: Some(0),
                 stderr: sanitized,
             }),
-        },
+        ),
     }
 }
 
@@ -340,6 +332,7 @@ mod tests {
             timeout_sec: None,
             on_error: OnError::Warn,
             enabled: true,
+            cache_ttl_sec: None,
         }
     }
 

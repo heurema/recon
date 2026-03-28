@@ -23,8 +23,8 @@ async fn main() {
 async fn run_app() -> i32 {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run { format, section, source } => {
-            cmd_run(cli.config.as_deref(), cli.verbose, &format, section.as_deref(), source.as_deref()).await
+        Commands::Run { format, section, source, diff, force } => {
+            cmd_run(cli.config.as_deref(), cli.verbose, &format, section.as_deref(), source.as_deref(), diff, force).await
         }
         Commands::Check { source } => {
             cmd_check(cli.config.as_deref(), cli.verbose, source.as_deref())
@@ -41,6 +41,8 @@ async fn cmd_run(
     format: &str,
     section_filter: Option<&str>,
     source_filter: Option<&str>,
+    diff: bool,
+    force: bool,
 ) -> i32 {
     // #14: validate format
     if format != "json" && format != "text" {
@@ -95,7 +97,47 @@ async fn cmd_run(
         eprintln!("[recon] collecting {} sources...", enabled_count);
     }
 
-    let briefing = runner::collect(&filtered_config, &resolved_display, scope).await;
+    // Initialize store for cache + history
+    let db = match recon::store::open() {
+        Ok(conn) => Some(conn),
+        Err(e) => {
+            if verbose { eprintln!("[recon] store unavailable: {}", e); }
+            None
+        }
+    };
+
+    let mut briefing = runner::collect(&filtered_config, &resolved_display, scope).await;
+
+    // Diff: annotate each source with delta vs previous run
+    if diff {
+        if let Some(ref conn) = db {
+            briefing.diff_mode = Some(true);
+            for section in &mut briefing.sections {
+                for result in &mut section.sources {
+                    let prev_data = recon::store::latest_source_data(conn, &result.id);
+                    let identical = recon::store::count_identical_tail(conn, &result.id).unwrap_or(0);
+                    match prev_data {
+                        Ok(Some(prev_json)) => {
+                            if let Ok(prev_val) = serde_json::from_str::<serde_json::Value>(&prev_json) {
+                                result.delta = Some(recon::diff::Delta::compute(&prev_val, &result.data, identical));
+                            }
+                        }
+                        Ok(None) => { result.delta = Some(recon::diff::Delta::first_run()); }
+                        Err(_) => {}
+                    }
+                }
+            }
+        } else {
+            eprintln!("warning: --diff requires history.db, but store is unavailable");
+        }
+    }
+
+    // Save run to history
+    if let Some(ref conn) = db {
+        if let Err(e) = recon::store::save_run(conn, &briefing) {
+            if verbose { eprintln!("[recon] failed to save run: {}", e); }
+        }
+    }
 
     if verbose {
         eprintln!(

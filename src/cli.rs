@@ -30,6 +30,14 @@ pub enum Commands {
         /// Run and output only this source id
         #[arg(long)]
         source: Option<String>,
+
+        /// Compute and emit delta vs previous run for each source
+        #[arg(long)]
+        diff: bool,
+
+        /// Bypass cache and force fresh execution for all sources
+        #[arg(long)]
+        force: bool,
     },
 
     /// Validate config and test source availability

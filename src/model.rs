@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::diff::Delta;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BriefingConfig {
     pub path: String,
@@ -24,6 +26,10 @@ pub struct Briefing {
     pub config: BriefingConfig,
     pub summary: BriefingSummary,
     pub sections: Vec<Section>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +50,27 @@ pub struct SourceResult {
     pub duration_ms: u64,
     pub data: serde_json::Value,
     pub error: Option<SourceError>,
+    /// Set when the result was served from cache instead of executing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_at: Option<DateTime<Utc>>,
+    /// Set when --diff flag is active and history is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<Delta>,
+}
+
+impl SourceResult {
+    /// Construct a SourceResult with cached_at=None, delta=None (v0.1 compat).
+    pub fn new(
+        id: String, source_type: &str, content_type: String, status: &str,
+        duration_ms: u64, data: serde_json::Value, error: Option<SourceError>,
+    ) -> Self {
+        Self {
+            id, source_type: source_type.to_string(), content_type,
+            trust: "untrusted".to_string(), status: status.to_string(),
+            duration_ms, data, error,
+            cached_at: None, delta: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

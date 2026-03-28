@@ -36,21 +36,20 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
                                     Err(_) => {
                                         shell::kill_process_group(pgid).await;
                                         // #15: status = "timed_out" not "error"
-                                        SourceResult {
-                                            id: source.id.clone(),
-                                            source_type: "shell".to_string(),
-                                            content_type: shell::format_to_content_type(&source.format),
-                                            trust: "untrusted".to_string(),
-                                            status: "timed_out".to_string(),
-                                            duration_ms: timeout_dur.as_millis() as u64,
-                                            data: serde_json::Value::Null,
-                                            error: Some(SourceError {
+                                        SourceResult::new(
+                                            source.id.clone(),
+                                            "shell",
+                                            shell::format_to_content_type(&source.format),
+                                            "timed_out",
+                                            timeout_dur.as_millis() as u64,
+                                            serde_json::Value::Null,
+                                            Some(SourceError {
                                                 error_type: "timed_out".to_string(),
                                                 message: format!("source '{}' timed out after {}s", source.id, timeout_dur.as_secs()),
                                                 exit_code: None,
                                                 stderr: String::new(),
                                             }),
-                                        }
+                                        )
                                     }
                                 }
                             }
@@ -59,21 +58,20 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
                     SourceType::File => {
                         match timeout(timeout_dur, file::execute(&source, max_output_bytes)).await {
                             Ok(result) => result,
-                            Err(_) => SourceResult {
-                                id: source.id.clone(),
-                                source_type: "file".to_string(),
-                                content_type: shell::format_to_content_type(&source.format),
-                                trust: "untrusted".to_string(),
-                                status: "timed_out".to_string(),
-                                duration_ms: timeout_dur.as_millis() as u64,
-                                data: serde_json::Value::Null,
-                                error: Some(SourceError {
+                            Err(_) => SourceResult::new(
+                                source.id.clone(),
+                                "file",
+                                shell::format_to_content_type(&source.format),
+                                "timed_out",
+                                timeout_dur.as_millis() as u64,
+                                serde_json::Value::Null,
+                                Some(SourceError {
                                     error_type: "timed_out".to_string(),
                                     message: format!("source '{}' timed out", source.id),
                                     exit_code: None,
                                     stderr: String::new(),
                                 }),
-                            },
+                            ),
                         }
                     }
                 }
@@ -91,21 +89,20 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
             SourceType::File => "file",
         };
         let result = handle.await.unwrap_or_else(|e| {
-            SourceResult {
-                id: enabled[i].id.clone(),
-                source_type: src_type.to_string(),
-                content_type: "text".to_string(),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: 0,
-                data: serde_json::Value::Null,
-                error: Some(SourceError {
+            SourceResult::new(
+                enabled[i].id.clone(),
+                src_type,
+                "text".to_string(),
+                "error",
+                0,
+                serde_json::Value::Null,
+                Some(SourceError {
                     error_type: "command_failed".to_string(),
                     message: format!("task panicked: {}", e),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            }
+            )
         });
         results.push((section, result, on_error));
     }
@@ -179,6 +176,8 @@ pub async fn collect(config: &Config, config_path: &str, scope: &str) -> Briefin
             sources_timed_out,
         },
         sections,
+        diff_mode: None,
+        baseline_at: None,
     }
 }
 
@@ -247,6 +246,7 @@ mod tests {
             timeout_sec: None,
             on_error,
             enabled,
+            cache_ttl_sec: None,
         }
     }
 

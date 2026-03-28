@@ -83,6 +83,10 @@ pub struct Source {
     pub on_error: OnError,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Per-source cache TTL in seconds. 0 = no cache (default).
+    /// Omitting this field in TOML is identical to cache_ttl_sec = 0.
+    #[serde(default)]
+    pub cache_ttl_sec: Option<u64>,
 }
 
 fn default_true() -> bool {

@@ -18,21 +18,20 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
     match fs::metadata(path).await {
         Ok(meta) if meta.len() as usize > max_bytes => {
             let elapsed = started.elapsed().as_millis() as u64;
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "file".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "file",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: "output_too_large".to_string(),
                     message: format!("file {} is {} bytes, max is {}", path, meta.len(), max_bytes),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            };
+            );
         }
         Err(_) => {} // will be caught by read below
         _ => {}
@@ -43,21 +42,20 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let elapsed = started.elapsed().as_millis() as u64;
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "file".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "file",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: "file_not_found".to_string(),
                     message: format!("file not found: {}", path),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            };
+            );
         }
         Err(e) => {
             let elapsed = started.elapsed().as_millis() as u64;
@@ -69,21 +67,20 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
             } else {
                 "file_not_found"
             };
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "file".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "file",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: error_type.to_string(),
                     message: format!("cannot read {}: {}", path, e),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            };
+            );
         }
     };
 
@@ -92,21 +89,20 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
         Ok(s) => s,
         Err(_) => {
             let elapsed = started.elapsed().as_millis() as u64;
-            return SourceResult {
-                id: source.id.clone(),
-                source_type: "file".to_string(),
-                content_type: format_to_content_type(&source.format),
-                trust: "untrusted".to_string(),
-                status: "error".to_string(),
-                duration_ms: elapsed,
-                data: Value::Null,
-                error: Some(SourceError {
+            return SourceResult::new(
+                source.id.clone(),
+                "file",
+                format_to_content_type(&source.format),
+                "error",
+                elapsed,
+                Value::Null,
+                Some(SourceError {
                     error_type: "parse_error".to_string(),
                     message: format!("file is not valid UTF-8: {}", path),
                     exit_code: None,
                     stderr: String::new(),
                 }),
-            };
+            );
         }
     };
 
@@ -114,31 +110,29 @@ pub async fn execute(source: &Source, max_bytes: usize) -> SourceResult {
 
     // AC12: invalid JSON/JSONL → parse_error with details
     match parse_output(&content, &source.format) {
-        Ok(data) => SourceResult {
-            id: source.id.clone(),
-            source_type: "file".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "ok".to_string(),
-            duration_ms: elapsed,
+        Ok(data) => SourceResult::new(
+            source.id.clone(),
+            "file",
+            format_to_content_type(&source.format),
+            "ok",
+            elapsed,
             data,
-            error: None,
-        },
-        Err(msg) => SourceResult {
-            id: source.id.clone(),
-            source_type: "file".to_string(),
-            content_type: format_to_content_type(&source.format),
-            trust: "untrusted".to_string(),
-            status: "error".to_string(),
-            duration_ms: elapsed,
-            data: Value::Null,
-            error: Some(SourceError {
+            None,
+        ),
+        Err(msg) => SourceResult::new(
+            source.id.clone(),
+            "file",
+            format_to_content_type(&source.format),
+            "error",
+            elapsed,
+            Value::Null,
+            Some(SourceError {
                 error_type: "parse_error".to_string(),
                 message: format!("{}: {}", path, msg),
                 exit_code: None,
                 stderr: String::new(),
             }),
-        },
+        ),
     }
 }
 
@@ -160,6 +154,7 @@ mod tests {
             timeout_sec: None,
             on_error: OnError::Warn,
             enabled: true,
+            cache_ttl_sec: None,
         }
     }
 
